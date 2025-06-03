@@ -56,6 +56,14 @@ public class ReviewsController : ControllerBase
     {
         try
         {
+            // Validacija modela
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(new { message = "Neispravni podaci", errors = ModelState.Values
+                    .SelectMany(v => v.Errors)
+                    .Select(e => e.ErrorMessage) });
+            }
+
             var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (string.IsNullOrEmpty(userIdClaim))
                 return Unauthorized(new { message = "Korisnik nije autentificiran." });
@@ -71,6 +79,7 @@ public class ReviewsController : ControllerBase
 
             // Provjeri postoji li termin
             var appointment = await _context.Appointments
+                .Include(a => a.Barber)
                 .FirstOrDefaultAsync(a => a.Id == appointmentId);
 
             if (appointment == null)
@@ -79,6 +88,19 @@ public class ReviewsController : ControllerBase
             // Provjeri je li termin završen
             if (appointment.Status != "Completed")
                 return BadRequest(new { message = "Možete ostaviti recenziju samo za završene termine." });
+
+            // Provjeri je li korisnik stvarno bio na tom terminu
+            if (appointment.UserId != userId)
+                return BadRequest(new { message = "Možete ostaviti recenziju samo za svoje termine." });
+
+            // Provjeri postoji li frizer
+            var barber = await _context.Barbers.FindAsync(dto.BarberId);
+            if (barber == null)
+                return NotFound(new { message = "Frizer nije pronađen." });
+
+            // Provjeri je li frizer stvarno radio taj termin
+            if (appointment.BarberId != dto.BarberId)
+                return BadRequest(new { message = "Navedeni frizer nije radio ovaj termin." });
 
             var review = new Review
             {
@@ -97,20 +119,24 @@ public class ReviewsController : ControllerBase
             _context.Reviews.Add(review);
 
             // Ažuriraj prosječnu ocjenu frizera
-            var barber = await _context.Barbers.FindAsync(dto.BarberId);
-            if (barber != null)
-            {
-                var barberReviews = await _context.Reviews
-                    .Where(r => r.BarberId == dto.BarberId)
-                    .ToListAsync();
+            var barberReviews = await _context.Reviews
+                .Where(r => r.BarberId == dto.BarberId)
+                .ToListAsync();
 
-                barber.Rating = (float)barberReviews.Average(r => r.Rating);
-                barber.ReviewCount = barberReviews.Count;
-            }
+            barber.Rating = (float)barberReviews.Average(r => r.Rating);
+            barber.ReviewCount = barberReviews.Count;
 
             await _context.SaveChangesAsync();
 
-            return Ok(review);
+            return Ok(new { 
+                message = "Recenzija uspješno kreirana",
+                review = new {
+                    id = review.Id,
+                    rating = review.Rating,
+                    comment = review.Comment,
+                    createdAt = review.CreatedAt
+                }
+            });
         }
         catch (Exception ex)
         {
